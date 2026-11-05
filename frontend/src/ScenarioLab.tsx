@@ -1,0 +1,75 @@
+import React,{useCallback,useEffect,useRef,useState} from 'react';
+import {Activity,ArrowRight,Bookmark,Check,ChevronRight,Clock3,Download,Edit3,Flag,FolderOpen,Layers,Navigation,Pause,Play,Plus,RotateCcw,Save,Ship,SkipForward,Target,Trash2,Upload,X,Zap} from 'lucide-react';
+import {CaseSketch,EncounterCanvas} from './EncounterCanvas';
+import {RiskChart} from './Chart';
+import {SceneProperties} from './SceneProperties';
+import {clock,elapsedLabel,fmt,type EditableScene,type EditableShip,type EncounterCase,type ScenePreview,type Snapshot} from './types';
+import './lab.css';
+
+const initialScene:EditableScene={name:'交叉会遇 · 90°',description:'两船航向夹角 90°，按当前航速驶向同一会遇区域。',duration:600,ships:[
+ {mmsi:'413000001',name:'本船',x:-1235,y:0,sog:10,cog:90,ship_type:70,ais_class:'A',nav_status:0},
+ {mmsi:'413000101',name:'目标船',x:0,y:-1235,sog:10,cog:0,ship_type:30,ais_class:'B',nav_status:0}
+]};
+const copy=<T,>(value:T):T=>structuredClone(value);
+async function api(path:string,method='GET',body?:unknown,signal?:AbortSignal){
+ const response=await fetch('/api'+path,{method,headers:body?{'Content-Type':'application/json'}:undefined,body:body?JSON.stringify(body):undefined,signal});
+ const data=await response.json();
+ if(!response.ok)throw new Error(typeof data.detail==='string'?data.detail:data.detail?.map((d:{msg:string})=>d.msg.replace('Value error, ','')).join('；')||'操作失败');
+ return data;
+}
+
+export function ScenarioLab({state,busy,onRun,onControl,onMonitor,onNotify,onExport,onSettings}:{state:Snapshot;busy:boolean;onRun:(scene:EditableScene,speed:number)=>Promise<Snapshot|null>;onControl:(action:string,extra?:object)=>Promise<Snapshot|null>;onMonitor:()=>void;onNotify:(message:string)=>void;onExport:()=>void;onSettings:()=>void}){
+ const [draft,setDraft]=useState<EditableScene>(copy(initialScene)),[cases,setCases]=useState<EncounterCase[]>([]),[saved,setSaved]=useState<EncounterCase[]>([]);
+ const [library,setLibrary]=useState<'cases'|'saved'>('cases'),[filter,setFilter]=useState('全部'),[caseId,setCaseId]=useState('angle_90'),[selected,setSelected]=useState(0);
+ const [preview,setPreview]=useState<ScenePreview|null>(null),[previewError,setPreviewError]=useState(''),[speed,setSpeed]=useState(10),[runId,setRunId]=useState<string|null>(null),[pending,setPending]=useState(false),[seek,setSeek]=useState<number|null>(null);
+ const [waypointMode,setWaypointMode]=useState(false);
+ const [casePage,setCasePage]=useState(0),[mobilePanel,setMobilePanel]=useState<'cases'|'properties'|null>(null);
+ const [casePageSize,setCasePageSize]=useState(()=>Math.max(2,Math.min(6,Math.floor((window.innerHeight-500)/54))));
+ useEffect(()=>{const resize=()=>setCasePageSize(Math.max(2,Math.min(6,Math.floor((window.innerHeight-500)/54))));window.addEventListener('resize',resize);return()=>window.removeEventListener('resize',resize);},[]);
+ useEffect(()=>setCasePage(0),[library,filter,casePageSize]);
+ const fileInput=useRef<HTMLInputElement>(null),draftReady=useRef(false);
+ const editing=runId==null||runId!==state.run_id,locked=busy||pending;
+ const configKey=JSON.stringify(state.config);
+ const refreshSaved=useCallback(async()=>{const data=await api('/custom-scenarios');setSaved(data.map((v:EncounterCase)=>({...v,category:'自定义'})));},[]);
+ useEffect(()=>{api('/cases').then(setCases).catch(e=>onNotify(e.message));refreshSaved().catch(e=>onNotify(e.message));},[refreshSaved,onNotify]);
+ useEffect(()=>{try{const previous=localStorage.getItem('ais-scene-draft-v1');if(previous){api('/scene/preview','POST',JSON.parse(previous)).then(data=>{if(!draftReady.current){setDraft(data.scene);setCaseId('draft');}}).catch(()=>{});}}catch{}},[]);
+ useEffect(()=>{const controller=new AbortController();setPreview(null);setPreviewError('');const timer=setTimeout(()=>{
+  api('/scene/preview','POST',draft,controller.signal).then((data:ScenePreview)=>{setPreview(data);try{localStorage.setItem('ais-scene-draft-v1',JSON.stringify(data.scene));}catch{}}).catch(e=>{if(e.name!=='AbortError')setPreviewError(e.message);});
+ },220);return()=>{clearTimeout(timer);controller.abort();};},[draft,configKey]);
+ const update=useCallback((index:number,patch:Partial<EditableShip>)=>{draftReady.current=true;setDraft(current=>({...current,ships:current.ships.map((s,i)=>i===index?{...s,...patch}:s)}));setCaseId('custom');},[]);
+ const changeDraft=(patch:Partial<EditableScene>)=>{draftReady.current=true;setDraft(current=>({...current,...patch}));setCaseId('custom');};
+ const load=async(item:EncounterCase)=>{if(!editing)await onControl('pause');draftReady.current=true;setRunId(null);setDraft(copy(item.scene));setCaseId(item.id);setSelected(0);setWaypointMode(false);setMobilePanel(null);};
+ const run=async()=>{if(previewError||!preview){onNotify(previewError||'正在检查场景参数，请稍候');return;}const next=await onRun(draft,speed);if(next){setRunId(next.run_id);setWaypointMode(false);}};
+ const backToEdit=async()=>{if(!editing)await onControl('pause');setRunId(null);};
+ const save=async()=>{setPending(true);try{await api('/custom-scenarios','POST',draft);await refreshSaved();setLibrary('saved');onNotify('场景已保存，可在“我的场景”重复使用');}catch(e){onNotify((e as Error).message);}finally{setPending(false);}};
+ const deleteSaved=async(id:string)=>{setPending(true);try{await api('/custom-scenarios/'+id,'DELETE');await refreshSaved();onNotify('已删除保存的场景');}catch(e){onNotify((e as Error).message);}finally{setPending(false);}};
+ const exportScene=()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(draft,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='ais-scene.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
+ const importScene=async(file:File)=>{setPending(true);try{if(file.size>1024*1024)throw new Error('场景文件不能超过 1 MB');const data=await api('/scene/preview','POST',JSON.parse(await file.text()));if(!editing)await onControl('pause');setRunId(null);draftReady.current=true;setDraft(data.scene);setCaseId('custom');onNotify('场景已载入，可继续调整或开始仿真');}catch(e){onNotify('导入失败：'+(e as Error).message);}finally{setPending(false);if(fileInput.current)fileInput.current.value='';}};
+ const displayedShips=editing?draft.ships:draft.ships.map(s=>{const live=state.vessels.find(v=>v.mmsi===s.mmsi);return live?{...s,x:live.x,y:live.y,sog:live.sog,cog:live.cog}:s;});
+ const liveTarget=state.vessels.find(v=>!v.is_own),metrics=editing?preview?.metrics:liveTarget?.risk;
+ const history=editing?[]:state.histories[draft.ships[1].mmsi]||[],first=editing?null:state.events[0];
+ const angle=preview?.heading_angle_deg??Math.min(Math.abs(draft.ships[0].cog-draft.ships[1].cog),360-Math.abs(draft.ships[0].cog-draft.ships[1].cog));
+ const own=draft.ships[selected],visibleCases=(library==='cases'?cases:saved).filter(c=>filter==='全部'||library==='saved'||c.category===filter);
+ return <div className="scenario-lab">
+  <div className="page-heading lab-heading"><div><div className="eyebrow">VESSEL ENCOUNTER SIMULATION</div><h2>会遇场景实验室 <span>选择案例，摆放双船，观察会遇与预警</span></h2></div><div className="heading-actions"><button className="button compact-nav" onClick={()=>setMobilePanel(mobilePanel==='cases'?null:'cases')}>案例库</button><button className="button compact-nav" onClick={()=>setMobilePanel(mobilePanel==='properties'?null:'properties')}>参数</button><button className="button" onClick={()=>fileInput.current?.click()} disabled={locked}><Upload size={14}/>载入场景</button><button className="button" onClick={exportScene}><Download size={14}/>导出场景</button><button className="button" onClick={onMonitor}>态势详情 <ArrowRight size={14}/></button></div></div>
+  <input type="file" accept=".json,application/json" ref={fileInput} hidden aria-label="载入场景 JSON" onChange={e=>{if(e.target.files?.[0])importScene(e.target.files[0]);}}/>
+  <div className="lab-steps"><span><b>01</b>选择典型案例或新建场景</span><ChevronRight size={13}/><span><b>02</b>设置位置、航速与航向</span><ChevronRight size={13}/><span><b>03</b>点击仿真，观察风险变化</span><button onClick={onSettings}>预警规则 <ChevronRight size={12}/></button></div>
+  <div className="lab-layout" data-mobile-panel={mobilePanel||''}>
+   <aside className="case-library"><div className="library-header"><Layers size={16}/><h3>会遇案例库</h3><span>{cases.length} 个案例</span></div><div className="library-tabs"><button className={library==='cases'?'active':''} onClick={()=>{setLibrary('cases');setFilter('全部');}}>典型案例</button><button className={library==='saved'?'active':''} onClick={()=>setLibrary('saved')}>我的场景 <span>{saved.length}</span></button></div>
+    {library==='cases'&&<div className="case-filters">{['全部','交叉','对遇','追越','曲线','安全通过'].map(f=><button className={f===filter?'active':''} key={f} onClick={()=>setFilter(f)}>{f}</button>)}</div>}
+    <div className="case-list">{visibleCases.slice(casePage*casePageSize,(casePage+1)*casePageSize).map(item=><div key={item.id} className={`case-entry ${caseId===item.id?'chosen':''}`}><button className="case-choice" disabled={locked} onClick={()=>load(item)}><CaseSketch ships={item.scene.ships}/><div><strong>{item.scene.name}</strong><span>{library==='saved'?'已保存场景':item.category} · {item.scene.duration/60} 分钟</span></div>{caseId===item.id?<Check size={13}/>:<ChevronRight size={13}/>}</button>{library==='saved'&&<button className="delete-scene" title={`删除场景 ${item.scene.name}`} aria-label={`删除场景 ${item.scene.name}`} disabled={locked} onClick={()=>deleteSaved(item.id)}><Trash2 size={12}/></button>}</div>)}{library==='saved'&&!saved.length&&<div className="no-saved"><Bookmark size={25}/><span>还没有保存的场景</span><p>摆放两船后点击“保存场景”，下次可以直接打开。</p></div>}</div>
+    <div className="case-pagination"><button disabled={casePage===0} onClick={()=>setCasePage(casePage-1)}>上一页</button><span>{casePage+1} / {Math.max(1,Math.ceil(visibleCases.length/casePageSize))}</span><button disabled={(casePage+1)*casePageSize>=visibleCases.length} onClick={()=>setCasePage(casePage+1)}>下一页</button></div>
+    <button className="new-scene" disabled={locked} onClick={()=>load({id:'custom',category:'自定义',scene:{...copy(initialScene),name:'自定义双船会遇',description:'自定义船位、速度和方向。'}})}><Plus size={15}/>新建自定义场景</button>
+   </aside>
+   <section className="lab-stage"><div className="lab-scene-title"><div><span className={editing?'edit-tag':'simulation-tag'}>{editing?'场景编辑':'仿真回放'}</span><h3>{draft.name}</h3></div><span className="angle-indicator">航向夹角 <b>{fmt(angle,0)}°</b></span></div>
+    <EncounterCanvas ships={displayedShips} selected={selected} onSelect={setSelected} onChange={update} editing={editing} tcpa={metrics?.tcpa_s} live={editing?null:state} resetKey={`${caseId}-${editing?'edit':'run'}`} plannedShips={draft.ships} waypointMode={waypointMode} onWaypointMode={setWaypointMode}/>
+    <div className="lab-playback">{editing?<><span className="ready-status"><i className={preview&&!previewError?'live-dot':'paused-dot'}/>{previewError?'请检查参数':preview?'场景就绪':'检查参数中…'}</span><span className="lab-duration"><Clock3 size={13}/>{draft.duration/60} 分钟</span><label className="lab-speed">速度<select aria-label="场景仿真倍速" value={speed} onChange={e=>setSpeed(Number(e.target.value))}>{[1,2,5,10,20].map(n=><option value={n} key={n}>{n}×</option>)}</select></label><button className="button primary run-scene" disabled={locked||!preview||!!previewError} onClick={run}><Play size={15} fill="currentColor"/>开始仿真</button></>:<><button className="lab-play-pause" disabled={locked} aria-label={state.running?'暂停场景仿真':'继续场景仿真'} onClick={()=>onControl(state.running?'pause':'play')}>{state.running?<Pause size={17}/>:<Play size={17}/>}</button><button disabled={locked} title="单步一秒" aria-label="场景单步一秒" onClick={()=>onControl('step')}><SkipForward size={16}/></button><div className="lab-timeline"><span>{elapsedLabel(seek??state.elapsed)} <em>/ {elapsedLabel(state.duration)}</em></span><input type="range" aria-label="会遇过程时间轴" min={0} max={state.duration} value={seek??state.elapsed} disabled={locked} onChange={e=>setSeek(Number(e.target.value))} onPointerUp={async e=>{const value=Number(e.currentTarget.value);setSeek(null);const next=await onControl('seek',{elapsed:value});if(next)setRunId(next.run_id);}} onKeyUp={async e=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){const value=Number(e.currentTarget.value);setSeek(null);const next=await onControl('seek',{elapsed:value});if(next)setRunId(next.run_id);}}}/></div><select className="speed-select" aria-label="调整仿真倍速" value={state.speed} disabled={locked} onChange={e=>onControl(state.running?'play':'pause',{speed:Number(e.target.value)})}>{[1,2,5,10,20].map(n=><option key={n} value={n}>{n}×</option>)}</select><button className="button back-edit" disabled={locked} onClick={backToEdit}><Edit3 size={13}/>返回编辑</button></>}</div>
+    <div className="lab-metrics"><div><span>当前距离</span><strong>{fmt(metrics?.actual_distance_m,0)}<small>m</small></strong></div><div><span>预测 DCPA</span><strong>{fmt(metrics?.dcpa_m,0)}<small>m</small></strong></div><div><span>预测 TCPA</span><strong>{fmt(metrics?.tcpa_s,0)}<small>s</small></strong></div><div className={metrics?.predicted_warning?'metric-warning':''}><span>综合风险</span><strong>{fmt(metrics?.collision_risk,3)}</strong></div></div>
+   </section>
+   <SceneProperties draft={draft} selected={selected} editing={editing} locked={locked} state={state} preview={preview} previewError={previewError} metrics={metrics} first={first} waypointMode={waypointMode} onWaypointMode={setWaypointMode} onSelect={setSelected} onChangeShip={update} onChangeScene={changeDraft} onSave={save} onBack={backToEdit} onExport={onExport} onRestore={()=>{const template=cases.find(c=>c.id==='angle_90');load(template||{id:'angle_90',category:'交叉',scene:copy(initialScene)});}}/>
+  </div>
+  <section className="lab-analysis"><div className="lab-analysis-header"><div><Activity size={15}/><h3>会遇过程与风险变化</h3><span>{editing?'调整船位和航向后，点击“开始仿真”观察完整过程':`${elapsedLabel(state.elapsed)} / ${elapsedLabel(state.duration)} · ${state.events.length} 个预警事件`}</span></div>{!editing&&<div><button disabled={locked} onClick={async()=>{const next=await onControl('next_warning');if(next)setRunId(next.run_id);}}><Zap size={12}/>推演至预警</button><button disabled={locked} onClick={async()=>{const next=await onControl('complete');if(next)setRunId(next.run_id);}}>完整推演<ArrowRight size={12}/></button></div>}</div>
+   {editing?<div className="before-simulation"><div><span className="cyan"/><span className="amber"/><Target size={27}/></div><p>准备好一个会遇场景，看看两艘船会如何接近</p><span>位置、速度、航向任意组合；相同参数可以重复推演和比较。</span></div>:<><RiskChart rows={history} threshold={state.config.risk_threshold}/><div className="simulation-summary"><span><i className="cyan"/>本船 {draft.ships[0].sog} kn / {draft.ships[0].cog}°</span><span><i className="amber"/>目标船 {draft.ships[1].sog} kn / {draft.ships[1].cog}°</span><span>峰值风险 <b>{fmt(Math.max(0,...history.map(r=>r.collision_risk)),3)}</b></span><span>已观测最小距离 <b>{history.length?fmt(Math.min(...history.map(r=>r.actual_distance_m)),0):'—'} m</b></span><button onClick={onMonitor}>查看轨迹、事件与报文<ArrowRight size={12}/></button></div></>}
+  </section>
+ </div>;
+}

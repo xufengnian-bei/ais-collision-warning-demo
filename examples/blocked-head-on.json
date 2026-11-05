@@ -1,0 +1,40 @@
+{
+  "name": "正面对遇 · 180°",
+  "description": "两船相向驶近，观察预警提前量。",
+  "duration": 600,
+  "auto_stop": {
+    "enabled": true,
+    "stop_distance_m": 350,
+    "resume_distance_m": 600,
+    "lookahead_s": 30,
+    "safe_duration_s": 5
+  },
+  "ships": [
+    {
+      "mmsi": "413000001",
+      "name": "本船",
+      "x": -1235,
+      "y": 0,
+      "sog": 10,
+      "cog": 90,
+      "ship_type": 70,
+      "ais_class": "A",
+      "nav_status": 0,
+      "waypoints": [],
+      "interpolation": "smooth"
+    },
+    {
+      "mmsi": "413000101",
+      "name": "目标船",
+      "x": 1235,
+      "y": 0,
+      "sog": 10,
+      "cog": 270,
+      "ship_type": 30,
+      "ais_class": "B",
+      "nav_status": 0,
+      "waypoints": [],
+      "interpolation": "smooth"
+    }
+  ]
+}

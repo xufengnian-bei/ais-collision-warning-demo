@@ -1,0 +1,1 @@
+"""AIS collision warning demonstration."""
